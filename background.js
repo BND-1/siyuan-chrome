@@ -119,13 +119,206 @@ function getSimpleDateTime() {
     return {date, time};
 }
 
+const DEFAULT_CLIP_TEMPLATE = [
+    '---',
+    '',
+    '- ${title}${siteName ? " - " + siteName : ""}',
+    '- [${urlDecoded}](${url}) ',
+    '${excerpt ? "- " + excerpt : ""}',
+    '- ${date} ${time}',
+    '',
+    '---',
+    '',
+    '${content}',
+].join('\n');
+
+function sanitizeDocTitle(rawTitle) {
+    const title = (rawTitle || 'Untitled').trim();
+    const sanitized = title.replace(/[\\\/\\\\:\\\\*\?"<>|]/g, '-');
+    return sanitized || 'Untitled';
+}
+
+function buildClipDocTitle(requestData) {
+    const baseTitle = requestData.title && requestData.title.trim() ? requestData.title.trim() : 'Untitled';
+    if (requestData.type === 'article') {
+        return sanitizeDocTitle(baseTitle);
+    }
+    const {date, time} = getSimpleDateTime();
+    return sanitizeDocTitle(`${baseTitle} ${date} ${time}`);
+}
+
+function appendClipToDatabase(requestData, docId) {
+    if (!requestData.selectedDatabaseID) {
+        return;
+    }
+    fetch(requestData.api + '/api/sqlite/flushTransaction', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Token ' + requestData.token,
+        },
+        body: JSON.stringify({}),
+    }).then(() => {
+        const dbInput = {
+            avID: requestData.selectedDatabaseID,
+            srcs: [{
+                id: docId,
+                isDetached: false,
+            }],
+        };
+        return fetch(requestData.api + '/api/av/addAttributeViewBlocks', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Token ' + requestData.token,
+            },
+            body: JSON.stringify(dbInput),
+        });
+    }).catch((error) => {
+        console.error('Failed to append clip to database', error);
+    });
+}
+
+function openDocIfNeeded(requestData, docId) {
+    chrome.storage.sync.get({
+        expOpenAfterClip: false,
+    }, (items) => {
+        if (!items.expOpenAfterClip || !docId) {
+            return;
+        }
+        let documentUrl = requestData.api + '?id=' + docId;
+        if (requestData.api.startsWith('http://localhost:') || requestData.api.startsWith('http://127.0.0.1:')) {
+            documentUrl = `siyuan://blocks/${docId}`;
+        }
+        chrome.tabs.create({url: documentUrl});
+    });
+}
+
+function convertNetImagesIfNeeded(requestData, docId) {
+    if (!requestData.fetchFileErr) {
+        return;
+    }
+    fetch(requestData.api + '/api/format/netImg2LocalAssets', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Token ' + requestData.token,
+        },
+        body: JSON.stringify({
+            id: docId,
+            url: requestData.href,
+        }),
+    }).catch((error) => {
+        console.error('Failed to convert remote images', error);
+    });
+}
+
+function handleClipSuccess(requestData, docId) {
+    appendClipToDatabase(requestData, docId);
+    safeTabsSendMessage(requestData.tabId, {
+        func: 'tipKey',
+        msg: 'tip_clip_ok',
+        tip: requestData.tip,
+    });
+    openDocIfNeeded(requestData, docId);
+    convertNetImagesIfNeeded(requestData, docId);
+    safeTabsSendMessage(requestData.tabId, {
+        func: 'reload',
+    });
+}
+
+function createClipDocument(requestData, response, docTitleOverride) {
+    const resolvedTitle = sanitizeDocTitle(docTitleOverride || buildClipDocTitle(requestData));
+    chrome.storage.sync.get({
+        clipTemplate: DEFAULT_CLIP_TEMPLATE,
+    }, (items) => {
+        if (!response.data || !response.data.md) {
+            console.warn('Unexpected clip payload from kernel', response);
+            if (response.msg) {
+                safeTabsSendMessage(requestData.tabId, {
+                    func: 'tip',
+                    msg: response.msg,
+                    tip: requestData.tip,
+                });
+            }
+            return;
+        }
+        let excerpt = requestData.excerpt ? requestData.excerpt.trim() : '';
+        if (excerpt !== '') {
+            excerpt = excerpt.replace(/\n{3,}/g, '\n\n');
+            excerpt = excerpt.replace(/\n/g, '\n  ');
+            excerpt = excerpt.trim();
+        }
+        let urlDecoded = requestData.href;
+        try {
+            urlDecoded = decodeURIComponent(urlDecoded);
+        } catch (e) {
+            console.warn(e);
+        }
+        const {date, time} = getSimpleDateTime();
+        const templateData = {
+            title: requestData.title || 'Untitled',
+            siteName: requestData.siteName || '',
+            excerpt: excerpt || '',
+            url: requestData.href,
+            urlDecoded: urlDecoded,
+            date,
+            time,
+            tags: requestData.tags,
+            content: response.data.md,
+        };
+        let markdown;
+        const clipTemplate = items.clipTemplate || DEFAULT_CLIP_TEMPLATE;
+        try {
+            markdown = renderTemplate(clipTemplate, templateData);
+        } catch (e) {
+            console.error('Template rendering error:', e);
+            markdown = getDefaultMarkdown(requestData, response.data.md);
+        }
+        let parentHPath = requestData.parentHPath || '';
+        parentHPath = parentHPath.trim();
+        if (parentHPath.endsWith('/')) {
+            parentHPath = parentHPath.slice(0, -1);
+        }
+        const targetPath = parentHPath ? parentHPath + '/' + resolvedTitle : '/' + resolvedTitle;
+        fetch(requestData.api + '/api/filetree/createDocWithMd', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Token ' + requestData.token,
+            },
+            body: JSON.stringify({
+                notebook: requestData.notebook,
+                parentID: requestData.parentDoc,
+                tags: requestData.tags,
+                path: targetPath,
+                markdown: markdown,
+                withMath: response.data.withMath,
+                clippingHref: requestData.href,
+                listDocTree: requestData.listDocTree,
+            }),
+        }).then((resp) => resp.json()).then((docResponse) => {
+            if (0 === docResponse.code) {
+                handleClipSuccess(requestData, docResponse.data);
+            } else {
+                safeTabsSendMessage(requestData.tabId, {
+                    func: 'tip',
+                    msg: docResponse.msg,
+                    tip: requestData.tip,
+                });
+            }
+        }).catch((error) => {
+            console.error(error);
+            safeTabsSendMessage(requestData.tabId, {
+                func: 'tipKey',
+                msg: 'tip_siyuan_kernel_unavailable',
+                tip: 'tip',
+            });
+        });
+    });
+}
 chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
     if (request.func !== 'upload-copy') {
         return
     }
 
     const requestData = request.data
-    const fetchFileErr = requestData.fetchFileErr
     const dom = requestData.dom
     const files = requestData.files
     const formData = new FormData()
@@ -181,154 +374,8 @@ chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
             })
         }
 
-        if (requestData.type === 'article') {
-            let title = requestData.title ? requestData.title : 'Untitled'
-            title = title.replaceAll("/", "／")
-            chrome.storage.sync.get({
-                clipTemplate: '---\n' +
-                    '\n' +
-                    '- ${title}${siteName ? " - " + siteName : ""}\n' +
-                    '- [${urlDecoded}](${url}) \n' +
-                    '${excerpt ? "- " + excerpt : ""}\n' +
-                    '- ${date} ${time}\n' +
-                    '\n' +
-                    '---\n' +
-                    '\n' +
-                    '${content}',
-            }, (items) => {
-                let excerpt = requestData.excerpt.trim()
-                if ("" !== excerpt) {
-                    // 将连续的三个换行符替换为两个换行符
-                    excerpt = excerpt.replace(/\n{3,}/g, "\n\n")
-                    // 从第二行开始，每行前面加两个空格 https://github.com/siyuan-note/siyuan/issues/11315
-                    excerpt = excerpt.replace(/\n/g, "\n  ")
-                    excerpt = excerpt.trim()
-                }
-                let urlDecoded = requestData.href
-                try {
-                    urlDecoded = decodeURIComponent(urlDecoded)
-                } catch (e) {
-                    console.warn(e)
-                }
-
-                const {date, time} = getSimpleDateTime();
-                const templateData = {
-                    title: requestData.title || 'Untitled',
-                    siteName: requestData.siteName || '',
-                    excerpt: excerpt || '',
-                    url: requestData.href,
-                    urlDecoded: urlDecoded,
-                    date,
-                    time,
-                    tags: requestData.tags,
-                    content: response.data.md
-                };
-
-                // 渲染模板
-                let markdown;
-                try {
-                    markdown = renderTemplate(items.clipTemplate, templateData);
-                } catch (e) {
-                    console.error('Template rendering error:', e);
-                    // 如果模板渲染失败，使用默认格式
-                    markdown = getDefaultMarkdown(requestData, response.data.md);
-                }
-
-                fetch(requestData.api + '/api/filetree/createDocWithMd', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': 'Token ' + requestData.token,
-                    },
-                    body: JSON.stringify({
-                        'notebook': requestData.notebook,
-                        'parentID': requestData.parentDoc,
-                        'tags': requestData.tags,
-                        'path': requestData.parentHPath + "/" + title,
-                        'markdown': markdown,
-                        'withMath': response.data.withMath,
-                        'clippingHref': requestData.href,
-                        'listDocTree': requestData.listDocTree,
-                    }),
-                }).then((response) => {
-                    return response.json()
-                }).then((response) => {
-                    if (0 === response.code) {
-                        // 添加到数据库
-                        if (requestData.selectedDatabaseID) {
-                            const docId = response.data;
-
-                            // 先刷新 SQL 数据库
-                            fetch(requestData.api + '/api/sqlite/flushTransaction', {
-                                method: 'POST',
-                                headers: {
-                                    'Authorization': 'Token ' + requestData.token,
-                                },
-                                body: JSON.stringify({}),
-                            }).then(() => {
-                                // 刷新完成后再添加到数据库
-                                const dbInput = {
-                                    avID: requestData.selectedDatabaseID,
-                                    srcs: [{
-                                        id: docId,
-                                        isDetached: false,
-                                    }]
-                                };
-                                fetch(requestData.api + '/api/av/addAttributeViewBlocks', {
-                                    method: 'POST',
-                                    headers: {
-                                        'Authorization': 'Token ' + requestData.token,
-                                    },
-                                    body: JSON.stringify(dbInput),
-                                })
-                            });
-                        }
-
-                        safeTabsSendMessage(requestData.tabId, {
-                            'func': 'tipKey',
-                            'msg': "tip_clip_ok",
-                            'tip': requestData.tip,
-                        })
-
-                        // 检查是否需要打开文档
-                        chrome.storage.sync.get({
-                            expOpenAfterClip: false,
-                        }, (items) => {
-                            if (items.expOpenAfterClip && response.data) {
-                                let documentUrl = requestData.api + "?id=" + response.data;
-                                if (requestData.api.startsWith("http://localhost:") || requestData.api.startsWith("http://127.0.0.1:")) {
-                                    documentUrl = `siyuan://blocks/${response.data}`;
-                                }
-                                chrome.tabs.create({url: documentUrl});
-                            }
-                        });
-
-                        if (fetchFileErr) {
-                            // 可能因为跨域问题导致下载图片失败，这里调用内核接口 `网络图片转换为本地图片` https://github.com/siyuan-note/siyuan/issues/7224
-                            fetch(requestData.api + '/api/format/netImg2LocalAssets', {
-                                method: 'POST',
-                                headers: {
-                                    'Authorization': 'Token ' + requestData.token,
-                                },
-                                body: JSON.stringify({
-                                    'id': response.data,
-                                    'url': requestData.href, // 改进浏览器剪藏扩展转换本地图片成功率 https://github.com/siyuan-note/siyuan/issues/7464
-                                }),
-                            })
-                        }
-
-                        safeTabsSendMessage(requestData.tabId, {
-                            'func': 'reload',
-                        })
-                    } else {
-                        safeTabsSendMessage(requestData.tabId, {
-                            'func': 'tip',
-                            'msg': response.msg,
-                            'tip': requestData.tip,
-                        })
-                    }
-                })
-            });
-        }
+        const docTitle = buildClipDocTitle(requestData)
+        createClipDocument(requestData, response, docTitle)
     }).catch((e) => {
         console.error(e)
         safeTabsSendMessage(requestData.tabId, {
