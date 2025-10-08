@@ -1,32 +1,29 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `manifest.json` defines permissions, service worker entry (`background.js`), and options page; bump its `version` for every store upload.
-- `background.js` wires the context menus and messaging; `content.js` performs DOM harvesting and clipboard actions; shared logic lives in `lib/Readability.js`.
-- UI assets (`options.html`, `popup.js`, `icon.png`) sit at the root for easy packaging.
-- `_locales/*/messages.json` houses i18n strings; mirror new keys across every locale before shipping.
+- `manifest.json` defines permissions, points to `background.js`, sets the options page, and must be version-bumped for every store upload.
+- `background.js` registers context menus and bridges messaging to `content.js`, which handles DOM scraping and clipboard writes; shared parsing lives in `lib/Readability.js`.
+- UI assets (`options.html`, `popup.js`, `icon.png`) sit at the repository root for direct packaging.
+- Localized strings live under `_locales/<lang>/messages.json`; keep keys mirrored across locales before releases.
 
 ## Build, Test, and Development Commands
-- For rapid iteration, load the repo via `chrome://extensions` → Developer Mode → Load Unpacked and point to this folder.
-- Package a release build with `zip -r dist/siyuan-chrome.zip manifest.json background.js content.js popup.js options.html lib _locales icon.png`; upload the zip to the stores.
-- After edits, refresh the unpacked extension or run `chrome.runtime.reload()` from the service worker console to pick up changes.
+- Enable Developer Mode in `chrome://extensions` and load this folder unpacked for rapid iteration.
+- Run `zip -r dist/siyuan-chrome.zip manifest.json background.js content.js popup.js options.html lib _locales icon.png` to produce a store-ready bundle.
+- After edits, refresh the unpacked extension or call `chrome.runtime.reload()` from the service worker console to pull in changes.
 
 ## Coding Style & Naming Conventions
-- JavaScript uses four-space indentation, trailing semicolons omitted, and single quotes by default.
-- Favor small helper functions (see `siyuanShowTip*`) and camelCase identifiers; keep DOM IDs kebab-cased.
-- Comments document non-obvious behaviour, especially locale-dependent or browser API workarounds.
-- When adding dependencies, bundle plain JavaScript modules in `lib/` to avoid build tooling.
+- JavaScript uses four-space indentation, single quotes, and no trailing semicolons.
+- Prefer small helper functions (e.g., `siyuanShowTip*`) and camelCase identifiers; keep DOM IDs in kebab-case.
+- Place any third-party modules in `lib/` to avoid build tooling; comment only for non-obvious browser quirks.
 
 ## Testing Guidelines
-- Manual verification is required: reload the extension, clip selections, send full-page readability captures, and confirm tips render in-page.
-- Validate i18n by switching Chrome language and checking `_locales` strings, especially new keys.
-- Use the browser console to watch for `chrome.runtime.lastError` logs and fix regressions before submitting.
+- Manual verification is required: reload the extension, clip a selection, capture a full page via Readability, and confirm in-page tips render.
+- Swap Chrome’s language to validate `_locales` strings and watch the console for `chrome.runtime.lastError`.
 
 ## Commit & Pull Request Guidelines
-- Follow the existing convention: emoji-coded scope (`:art:`, `:bug:`) plus a concise summary, and append related GitHub issues (e.g., `Fix clipping jitter #123`).
-- Keep commits focused; include locale updates and manifest bumps alongside the feature that needs them.
-- Pull requests must describe the user impact, outline manual verification steps, and attach screenshots or screen recordings when UI changes occur.
+- Follow the emoji prefix convention (e.g., `:art: Polish popup spacing #123`) and bundle locale edits plus manifest bumps with related features.
+- Pull requests should outline user impact, document manual verification steps, and include screenshots or recordings for UI updates.
 
 ## Security & Configuration Tips
-- Never hardcode SiYuan API tokens; the options page stores them via `chrome.storage.sync`.
-- Review requested permissions before release to avoid unexpected prompts, and document any new host access in the PR.
+- Never hardcode SiYuan API tokens; store them through `chrome.storage.sync`.
+- Review requested permissions and host access in `manifest.json` before release, and document any changes in the PR.

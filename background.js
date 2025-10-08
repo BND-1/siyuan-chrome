@@ -22,6 +22,15 @@ chrome.contextMenus.onClicked.addListener(function (info, tab) {
             'srcUrl': info.srcUrl,
         })
     } else if (info.menuItemId === 'send') {
+        const hasSelection = typeof info.selectionText === 'string' && info.selectionText.trim() !== ''
+        if (hasSelection) {
+            safeTabsSendMessage(tab && tab.id, {
+                'func': 'copy',
+                'tabId': tab && tab.id,
+                'srcUrl': info.srcUrl,
+            })
+            return
+        }
         safeTabsSendMessage(tab && tab.id, {
             'func': 'siyuanGetReadability',
             'tabId': tab && tab.id,
