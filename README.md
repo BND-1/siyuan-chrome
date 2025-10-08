@@ -15,8 +15,8 @@ SiYuan browser extension for Chrome.
 ### ✨ Usage
 
 1. Install the extension, then configure the API token in the extension options (you can view the token in SiYuan Settings - About)
-2. On a web page, select the content you want to clip, then choose "Copy to SiYuan" from the context menu
-3. Paste in SiYuan
+2. On a web page, select the content you want to clip, then choose "Copy to SiYuan" (always clips the selection) or "Send to SiYuan" (clips the selection if present, otherwise sends a Readability extract of the full page)
+3. Paste in SiYuan or open the document created by the extension
 
 ### 🔒 Privacy Policy
 

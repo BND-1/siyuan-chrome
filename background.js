@@ -9,7 +9,7 @@ chrome.runtime.onInstalled.addListener(() => {
         chrome.contextMenus.create({
             id: 'send',
             title: chrome.i18n.getMessage("send"),
-            contexts: ['page'],
+            contexts: ['page', 'selection'],
         });
     });
 });
